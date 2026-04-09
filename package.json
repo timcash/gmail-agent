@@ -1,0 +1,23 @@
+{
+  "name": "gmail-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A simple Gmail agent built on top of googleworkspace/cli",
+  "homepage": "https://github.com/googleworkspace/cli",
+  "license": "UNLICENSED",
+  "scripts": {
+    "auth:setup": "node src/gmail-agent.js auth:setup",
+    "auth:start": "node src/gmail-agent.js auth:start",
+    "auth:login": "node src/gmail-agent.js auth:login",
+    "auth:doctor": "node src/gmail-agent.js auth:doctor",
+    "gmail:profile": "node src/gmail-agent.js gmail:profile",
+    "gmail:inbox": "node src/gmail-agent.js gmail:inbox",
+    "gmail:search": "node src/gmail-agent.js gmail:search",
+    "gmail:read": "node src/gmail-agent.js gmail:read",
+    "gws": "node src/gmail-agent.js gws"
+  },
+  "dependencies": {
+    "@googleworkspace/cli": "^0.22.5",
+    "dotenv": "^17.2.3"
+  }
+}
