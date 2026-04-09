@@ -8,7 +8,8 @@ This project keeps the official `gws` CLI doing the real Gmail work, then wraps 
 
 - Local project config in `./.gws/`
 - Guided auth helper that opens the right Google Cloud pages
-- Simple login command with read-only Gmail scopes
+- Verification that checks the saved token, Gmail scope, and live mailbox access
+- Reset flow for the common case where you add scopes after already logging in
 - Quick commands for profile, inbox summary, search, and reading a message
 - A direct pass-through command when you want full `gws` power
 
@@ -34,18 +35,26 @@ If `gcloud` is installed and you are already logged in, you can often finish set
 npm run gws -- auth setup --login
 ```
 
+If you want the project to inspect your current state and tell you what is missing, use:
+
+```powershell
+npm run auth:guide
+```
+
 ## 2. Create Google OAuth credentials
 
 Open the Google Cloud Console and do this once:
 
 1. Create or pick a Google Cloud project.
 2. Enable the Gmail API.
-3. Open **OAuth consent screen** and choose **External**.
+3. Open **Google Auth Platform** and choose **External**.
 4. Keep it in **Testing** mode for personal use.
-5. Add your Gmail address under **Test users**.
-6. Open **Credentials** and create an **OAuth client ID**.
-7. Choose **Desktop app**.
-8. Download the client JSON.
+5. Under **Audience**, add your Gmail address under **Test users**.
+6. Under **Data Access**, add the Gmail read-only scope:
+   `https://www.googleapis.com/auth/gmail.readonly`
+7. Open **Credentials** and create an **OAuth client ID**.
+8. Choose **Desktop app**.
+9. Download the client JSON.
 
 Helpful console links:
 
@@ -87,10 +96,10 @@ npm run auth:doctor
 If you want the project to guide you through setup, use:
 
 ```powershell
-npm run auth:setup -- --open
+npm run auth:guide -- --open
 ```
 
-That opens the key Google Cloud pages and the local `secrets` folder.
+That opens the key Google Cloud pages and the local `secrets` folder, and it prints the exact checklist this project expects.
 
 If it looks right, start login:
 
@@ -98,7 +107,7 @@ If it looks right, start login:
 npm run auth:login
 ```
 
-That opens the Google OAuth flow through the upstream `gws auth login --readonly -s gmail` command.
+That opens the Google OAuth flow through the upstream `gws auth login --readonly -s gmail` command, then it immediately verifies that Gmail access really works.
 
 If you want one command that opens the right pages, waits for the OAuth JSON, and then starts login automatically, use:
 
@@ -109,6 +118,18 @@ npm run auth:start
 If Google shows **"Google hasn't verified this app"**, click through. That is expected for a personal testing-mode app.
 
 If Google says **Access blocked**, your Gmail address probably is not listed as a **Test user** yet.
+
+If login succeeds but Gmail commands still fail with **insufficientPermissions**, the token is missing the Gmail scope. Add the Gmail read-only scope under **Google Auth Platform** -> **Data Access**, then refresh the saved token:
+
+```powershell
+npm run auth:reset
+```
+
+To verify everything end to end at any time:
+
+```powershell
+npm run auth:verify
+```
 
 ## 5. Access your Gmail
 
@@ -145,8 +166,9 @@ npm run gws -- gmail +triage --max 5 --query "label:inbox newer_than:3d"
 ## 6. A quick real-world flow
 
 ```powershell
-npm run auth:doctor
+npm run auth:guide
 npm run gws -- auth setup --login
+npm run auth:verify
 npm run gmail:profile
 npm run gmail:inbox
 npm run gmail:search -- "label:inbox newer_than:3d"
@@ -156,6 +178,7 @@ npm run gmail:search -- "label:inbox newer_than:3d"
 
 - Credentials and cached auth stay under `./.gws/`.
 - `secrets/` and `.env` are ignored by git.
+- If you change test users or OAuth scopes after logging in, run `npm run auth:reset` so Google issues a fresh token.
 - The upstream CLI is dynamic, so you can explore more with:
 
 ```powershell

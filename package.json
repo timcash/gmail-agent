@@ -6,9 +6,12 @@
   "homepage": "https://github.com/googleworkspace/cli",
   "license": "UNLICENSED",
   "scripts": {
+    "auth:guide": "node src/gmail-agent.js auth:guide",
     "auth:setup": "node src/gmail-agent.js auth:setup",
     "auth:start": "node src/gmail-agent.js auth:start",
     "auth:login": "node src/gmail-agent.js auth:login",
+    "auth:verify": "node src/gmail-agent.js auth:verify",
+    "auth:reset": "node src/gmail-agent.js auth:reset",
     "auth:doctor": "node src/gmail-agent.js auth:doctor",
     "gmail:profile": "node src/gmail-agent.js gmail:profile",
     "gmail:inbox": "node src/gmail-agent.js gmail:inbox",
