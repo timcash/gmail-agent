@@ -4,6 +4,38 @@ A tiny local Gmail agent built on top of [`googleworkspace/cli`](https://github.
 
 This project keeps the official `gws` CLI doing the real Gmail work, then wraps it in a few small commands so auth and day-to-day use are easier on Windows.
 
+## LLM quick check
+
+If another LLM needs to verify that the project is working and fetch the top unread email using CLI commands only, use this sequence:
+
+```powershell
+npm install
+npm run auth:verify
+npm run gmail:profile
+npm run --silent gws -- gmail +triage --max 1 --format json
+```
+
+The `+triage` command returns the top unread message at `messages[0]`. In PowerShell, extract that message ID and read it like this:
+
+```powershell
+$top = npm run --silent gws -- gmail +triage --max 1 --format json | ConvertFrom-Json
+$id = $top.messages[0].id
+npm run --silent gws -- gmail +read --id $id --headers
+```
+
+If you want the full message body as JSON instead of text output:
+
+```powershell
+npm run --silent gws -- gmail +read --id $id --headers --format json
+```
+
+If `npm run auth:verify` fails, the next commands to try are:
+
+```powershell
+npm run auth:guide
+npm run auth:login
+```
+
 ## What you get
 
 - Local project config in `./.gws/`
