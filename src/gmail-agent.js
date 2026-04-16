@@ -11,6 +11,12 @@ const configDir = path.join(projectRoot, ".gws");
 const localClientSecret = path.join(configDir, "client_secret.json");
 const defaultClientSecretPath = path.join(projectRoot, "secrets", "client_secret.json");
 const gmailReadonlyScope = "https://www.googleapis.com/auth/gmail.readonly";
+const gmailSendScope = "https://www.googleapis.com/auth/gmail.send";
+const gmailModifyScope = "https://www.googleapis.com/auth/gmail.modify";
+const gmailLabelsScope = "https://www.googleapis.com/auth/gmail.labels";
+const pubsubScope = "https://www.googleapis.com/auth/pubsub";
+const gmailBaseScopes = [gmailReadonlyScope, gmailSendScope];
+const gmailDaemonScopes = [...gmailBaseScopes, gmailModifyScope, gmailLabelsScope, pubsubScope];
 const knownGcloudBins = [
   path.join(process.env.LOCALAPPDATA || "", "Google", "Cloud SDK", "google-cloud-sdk", "bin"),
   path.join("C:", "Program Files", "Google", "Cloud SDK", "google-cloud-sdk", "bin")
@@ -25,6 +31,45 @@ function parseJson(text) {
 
   if (!trimmed) {
     return null;
+  }
+
+  const firstChar = trimmed[0];
+
+  if (firstChar === "{" || firstChar === "[") {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = 0; index < trimmed.length; index += 1) {
+      const char = trimmed[index];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === "\"") {
+        inString = true;
+      } else if (char === "{" || char === "[") {
+        depth += 1;
+      } else if (char === "}" || char === "]") {
+        depth -= 1;
+
+        if (depth === 0) {
+          try {
+            return JSON.parse(trimmed.slice(0, index + 1));
+          } catch {
+            break;
+          }
+        }
+      }
+    }
   }
 
   try {
@@ -100,14 +145,14 @@ function ensureLocalClientSecret(strict = true) {
   const source = path.resolve(projectRoot, configuredPath);
 
   if (!fs.existsSync(source)) {
-    if (!strict) {
+    if (!strict || hasEnvClientCredentials()) {
       return { configured: true, exists: false, source };
     }
 
     console.error(JSON.stringify({
       error: "missing_client_secret_file",
       message: `Expected OAuth client JSON at ${source}`,
-      fix: "Download a Desktop OAuth client JSON from Google Cloud Console and save it there, or use GOOGLE_WORKSPACE_CLI_CLIENT_ID and GOOGLE_WORKSPACE_CLI_CLIENT_SECRET in .env."
+      fix: "Download a Desktop OAuth client JSON from Google Cloud Console and save it there, or remove GMAIL_AGENT_CLIENT_SECRET_FILE and use GOOGLE_WORKSPACE_CLI_CLIENT_ID and GOOGLE_WORKSPACE_CLI_CLIENT_SECRET in .env."
     }, null, 2));
     process.exit(1);
   }
@@ -280,7 +325,27 @@ function hasStoredCredentials(authStatus) {
   );
 }
 
-function hasGmailScope(authStatus) {
+function getGrantedScopes(authStatus) {
+  return authStatus && authStatus.data && Array.isArray(authStatus.data.scopes)
+    ? authStatus.data.scopes
+    : [];
+}
+
+function getMissingRequiredGmailScopes(authStatus, requiredScopes = gmailBaseScopes) {
+  const grantedScopes = getGrantedScopes(authStatus);
+
+  return requiredScopes.filter((scope) => !grantedScopes.includes(scope));
+}
+
+function hasRequiredGmailScopes(authStatus, requiredScopes = gmailBaseScopes) {
+  return getMissingRequiredGmailScopes(authStatus, requiredScopes).length === 0;
+}
+
+function formatScopeList(scopes = gmailBaseScopes) {
+  return scopes.map((scope) => `     - ${scope}`).join("\n");
+}
+
+function hasAnyGmailScope(authStatus) {
   const scopes = authStatus && authStatus.data && Array.isArray(authStatus.data.scopes)
     ? authStatus.data.scopes
     : [];
@@ -299,8 +364,8 @@ Manual setup checklist:
      - Add your Google account as a Test user
      ${urls.consent}
   3. Google Auth Platform -> Data Access:
-     - Add the Gmail read-only scope
-     - Scope: ${gmailReadonlyScope}
+     - Add these Gmail scopes:
+${formatScopeList()}
      ${urls.consent}
   4. Credentials:
      - Create OAuth client ID
@@ -320,7 +385,8 @@ Fix this in Google Cloud for project ${projectId || "<set your project first>"}:
      - Confirm your Google account is listed as a Test user
      ${urls.consent}
   2. Google Auth Platform -> Data Access
-     - Add ${gmailReadonlyScope}
+     - Add these Gmail scopes:
+${formatScopeList(gmailBaseScopes)}
      ${urls.consent}
   3. Then refresh the token so Google grants the new scope:
      npm run auth:reset
@@ -340,6 +406,7 @@ Mailbox access: verified
 Try:
   npm run gmail:inbox
   npm run gmail:search -- "from:github newer_than:7d"
+  npm run gmail:send -- --to you@example.com --subject "Hello" --body "Hi there" --dry-run
 `);
 }
 
@@ -360,7 +427,7 @@ Next step:
     return false;
   }
 
-  if (!hasGmailScope(authStatus)) {
+  if (!hasRequiredGmailScopes(authStatus)) {
     printScopeRepair(projectId, urls);
     return false;
   }
@@ -401,7 +468,8 @@ Gmail auth verification failed.
 What to check:
   - The OAuth client is a Desktop app
   - Your account is a Test user
-  - ${gmailReadonlyScope} is added under Google Auth Platform -> Data Access
+  - These scopes are added under Google Auth Platform -> Data Access:
+${formatScopeList(gmailBaseScopes)}
   - If you changed scopes after logging in, run: npm run auth:reset
 
 Raw error:
@@ -413,8 +481,8 @@ ${errorDetails.message || profileStatus.result.stderr || profileStatus.result.st
   return false;
 }
 
-async function authLoginFlow() {
-  const result = runGwsProcess(["auth", "login", "--readonly", "-s", "gmail"], {
+async function authLoginFlow(requiredScopes = gmailBaseScopes) {
+  const result = runGwsProcess(["auth", "login", "--scopes", requiredScopes.join(",")], {
     strictClientSecret: true
   });
 
@@ -431,7 +499,7 @@ async function authLoginFlow() {
   process.exit(verified ? 0 : 1);
 }
 
-async function authResetFlow() {
+async function authResetFlow(requiredScopes = gmailBaseScopes) {
   console.log("Clearing saved credentials so the next login can pick up new scopes...");
   const logoutResult = runGwsProcess(["auth", "logout"], {
     strictClientSecret: false
@@ -446,7 +514,7 @@ async function authResetFlow() {
     process.exit(logoutResult.status);
   }
 
-  await authLoginFlow();
+  await authLoginFlow(requiredScopes);
 }
 
 function sleep(ms) {
@@ -495,7 +563,7 @@ What you need:
      - Testing mode
      - Your Google account added as a Test user
   4. Google Auth Platform -> Data Access:
-     - Add ${gmailReadonlyScope}
+${formatScopeList(gmailBaseScopes)}
   5. Credentials -> Desktop app OAuth client
   6. Desktop OAuth client JSON downloaded to:
      ${expectedPath}
@@ -610,12 +678,15 @@ Commands:
   auth:setup                 Show auth steps and optionally open Google Cloud pages
   auth:start                 Open auth pages, wait for the OAuth JSON, then launch login
   auth:login                 Run login, then verify that Gmail access really works
+  auth:login:daemon          Run login for daemon scopes (read/send/modify/labels/pubsub)
   auth:verify                Check saved auth state, Gmail scopes, and live mailbox access
   auth:reset                 Clear saved tokens, re-login, and verify again
+  auth:reset:daemon          Clear saved tokens, re-login with daemon scopes, and verify again
   gmail:profile              Show your Gmail profile
   gmail:inbox                Show a simple unread inbox summary
   gmail:search <query>       Search Gmail and show matching message headers
   gmail:read <messageId>     Read one message body plus common headers
+  gmail:send <...args>       Send an email via gws +send (supports -a/--attach)
   gws <...args>              Pass raw args straight through to gws
 `);
 }
@@ -638,7 +709,11 @@ function authDoctor() {
     usingClientIdAndSecret: hasEnvClientCredentials(),
     projectId: getEffectiveProjectId(gcloudContext),
     hasStoredCredentials: hasStoredCredentials(authStatus),
-    hasGmailScope: hasGmailScope(authStatus)
+    hasAnyGmailScope: hasAnyGmailScope(authStatus),
+    hasRequiredGmailScopes: hasRequiredGmailScopes(authStatus),
+    missingRequiredGmailScopes: getMissingRequiredGmailScopes(authStatus, gmailBaseScopes),
+    hasRequiredDaemonScopes: hasRequiredGmailScopes(authStatus, gmailDaemonScopes),
+    missingDaemonScopes: getMissingRequiredGmailScopes(authStatus, gmailDaemonScopes)
   };
 
   console.log(JSON.stringify(report, null, 2));
@@ -669,7 +744,8 @@ Detected:
   gcloud project:   ${projectId || "not set"}
   OAuth client:     ${auth.isReady ? "ready" : "missing"}
   Saved login:      ${hasStoredCredentials(authStatus) ? "yes" : "no"}
-  Gmail scope:      ${hasGmailScope(authStatus) ? "granted" : "missing"}
+  Gmail scopes:     ${hasRequiredGmailScopes(authStatus, gmailBaseScopes) ? "ready for read + send" : "missing required scopes"}
+  Daemon scopes:    ${hasRequiredGmailScopes(authStatus, gmailDaemonScopes) ? "ready for evented daemon" : "missing evented-daemon scopes"}
 `);
 
   if (!auth.isReady) {
@@ -692,7 +768,7 @@ Next step:
     return;
   }
 
-  if (!hasGmailScope(authStatus)) {
+  if (!hasRequiredGmailScopes(authStatus, gmailBaseScopes)) {
     printScopeRepair(projectId, urls);
     return;
   }
@@ -733,6 +809,19 @@ function gmailRead(messageId) {
     "--id",
     messageId,
     "--headers"
+  ]);
+}
+
+function gmailSend(args) {
+  if (!args.length) {
+    console.error("Usage: npm run gmail:send -- --to someone@example.com --subject \"Hello\" --body \"Hi\" [-a FILE]");
+    process.exit(1);
+  }
+
+  runGws([
+    "gmail",
+    "+send",
+    ...args
   ]);
 }
 
@@ -788,11 +877,17 @@ async function main() {
     case "auth:login":
       await authLoginFlow();
       break;
+    case "auth:login:daemon":
+      await authLoginFlow(gmailDaemonScopes);
+      break;
     case "auth:verify":
       process.exit(await authVerify() ? 0 : 1);
       break;
     case "auth:reset":
       await authResetFlow();
+      break;
+    case "auth:reset:daemon":
+      await authResetFlow(gmailDaemonScopes);
       break;
     case "gmail:profile":
       runGws(["gmail", "users", "getProfile", "--params", JSON.stringify({ userId: "me" })]);
@@ -806,6 +901,9 @@ async function main() {
     case "gmail:read":
       gmailRead(rest[0]);
       break;
+    case "gmail:send":
+      gmailSend(rest);
+      break;
     case "gws":
       runGws(rest);
       break;
@@ -815,7 +913,22 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+module.exports = {
+  buildEnv,
+  getEffectiveProjectId,
+  getGmailProfileStatus,
+  getGwsAuthStatus,
+  getMissingRequiredGmailScopes,
+  gmailBaseScopes,
+  gmailDaemonScopes,
+  hasRequiredGmailScopes,
+  projectRoot,
+  runGwsProcess
+};
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
