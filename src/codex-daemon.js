@@ -24,7 +24,9 @@ const {
   markThreadRead: markGmailThreadRead,
   modifyThreadLabels,
   readMessage,
+  readThread,
   replyToMessage,
+  sendEmail,
   runGwsJson
 } = require("./codex-gmail");
 const {
@@ -34,6 +36,10 @@ const {
   projectRoot,
   runGwsProcess
 } = require("./gmail-agent");
+const {
+  DEFAULT_PUBLIC_ORIGIN,
+  startMailApiServer
+} = require("./codex-mail-api");
 
 const runtimeDir = (() => {
   const configured = process.env.CODEX_RUNTIME_DIR || process.env.CODEX_314_RUNTIME_DIR;
@@ -53,8 +59,12 @@ const legacyPidFile = path.join(runtimeDir, "codex-314.pid");
 const globalMutexName = "Global\\gmail-agent-codex-daemon";
 const defaultQuery = `subject:${SUBJECT_PREFIX} newer_than:30d`;
 const defaultMaxMessages = 25;
+const defaultMailApiPort = Number.parseInt(process.env.CODEX_MAIL_PORT || "4192", 10);
 const defaultWatchRenewHours = 24;
 const defaultReconcileIntervalMs = 15000;
+const defaultPublicOrigin = process.env.CODEX_PUBLIC_ORIGIN
+  || process.env.CODEX_MAIL_PUBLIC_ORIGIN
+  || DEFAULT_PUBLIC_ORIGIN;
 const legacySubjectPrefixes = ["codex-314"];
 const workspaceRoot = (() => {
   const configured = process.env.CODEX_WORKSPACE_ROOT || process.env.CODEX_314_WORKSPACE_ROOT;
@@ -96,6 +106,8 @@ function parseArgs(args) {
     once: false,
     query: defaultQuery,
     reconcileIntervalMs: defaultReconcileIntervalMs,
+    httpPort: defaultMailApiPort,
+    publicOrigin: defaultPublicOrigin,
     triageQuery: buildTriageReconcileQuery(),
     watchRenewHours: defaultWatchRenewHours
   };
@@ -136,6 +148,17 @@ function parseArgs(args) {
         options.reconcileIntervalMs = Math.max(1000, value * 1000);
       }
 
+      index += 1;
+    } else if (arg === "--http-port" && args[index + 1]) {
+      const value = Number(args[index + 1]);
+
+      if (Number.isFinite(value) && value >= 0) {
+        options.httpPort = Math.floor(value);
+      }
+
+      index += 1;
+    } else if (arg === "--public-origin" && args[index + 1]) {
+      options.publicOrigin = args[index + 1];
       index += 1;
     }
   }
@@ -1155,6 +1178,8 @@ function createSystem(profile, state, options) {
       reconcileIntervalMs: options.reconcileIntervalMs,
       triageQuery: options.triageQuery,
       triageMode: "label-only",
+      httpPort: options.httpPort,
+      publicOrigin: options.publicOrigin,
       workspaceRoot,
       watchRenewHours: options.watchRenewHours
     }),
@@ -1433,12 +1458,18 @@ async function main() {
   const singletonHelper = await acquireSingletonGuard();
   writePidFile();
   let shuttingDown = false;
+  let apiServer = null;
 
   const cleanup = () => {
     shuttingDown = true;
 
     if (singletonHelper && !singletonHelper.killed) {
       singletonHelper.kill();
+    }
+
+    if (apiServer) {
+      void apiServer.close().catch(() => undefined);
+      apiServer = null;
     }
 
     removePidFile();
@@ -1484,6 +1515,44 @@ async function main() {
     });
     await system.persist();
     log(`codex daemon started for ${profile.emailAddress}. Mode: ${options.once ? "once" : "evented-watch"}.`);
+
+    if (!options.once && options.httpPort !== 0) {
+      try {
+        apiServer = await startMailApiServer({
+          getMailboxProfile: () => profile,
+          getRuntimeInfo: () => system.getRuntimeInfo(),
+          getState: () => system.state,
+          host: process.env.CODEX_MAIL_HOST || "127.0.0.1",
+          markThreadRead: async (threadId) => markGmailThreadRead(threadId),
+          persist: async () => {
+            await system.persist();
+          },
+          port: options.httpPort,
+          publicOrigin: options.publicOrigin,
+          readThread: async (threadId) => readThread(threadId),
+          recordEvent: (type, details) => {
+            system.recordEvent(type, details);
+          },
+          replyToMessage: async (messageId, body) => replyToMessage(messageId, body),
+          sendEmail: async ({ to, subject, body }) => sendEmail({ to, subject, body })
+        });
+
+        system.recordEvent("mail_api_started", {
+          host: apiServer.host,
+          port: apiServer.port,
+          publicOrigin: apiServer.publicOrigin
+        });
+        await system.persist();
+        log(`mail api listening on http://${apiServer.host}:${apiServer.port} -> ${apiServer.publicOrigin}`);
+      } catch (error) {
+        system.recordEvent("mail_api_failed", {
+          error: serializeError(error),
+          port: options.httpPort
+        });
+        await system.persist();
+        log(`mail api failed to start: ${serializeError(error)}`);
+      }
+    }
 
     if (options.once) {
       await runOnce(system, options);
