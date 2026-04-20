@@ -174,6 +174,82 @@ const EMAIL_CLI_COMMANDS = [
     aliases: []
   }
 ];
+const HELP_GUIDE_SECTIONS = [
+  {
+    title: "What the system is:",
+    lines: [
+      "- The monitor is the fast control role. It handles labels, queueing, reports, health checks, direct commands, and inbox triage.",
+      "- The worker is the Codex-backed role. It handles real repo work inside the pinned workspace for a thread.",
+      "- Only one worker task runs at a time system-wide. New work gets a queue acknowledgement right away.",
+      "- Follow-ups in the same Gmail thread reuse the same worker session and thread history.",
+      "- The worker is guided through a TDD flow: plan -> red -> green -> refactor -> docs."
+    ]
+  },
+  {
+    title: "Best direct commands:",
+    lines: [
+      `- ${SUBJECT_PREFIX}/help`,
+      `- ${SUBJECT_PREFIX}/ps`,
+      `- ${SUBJECT_PREFIX}/health`,
+      `- ${SUBJECT_PREFIX}/queue`,
+      `- ${SUBJECT_PREFIX}/tasks 10`,
+      `- ${SUBJECT_PREFIX}/errors 10`,
+      `- ${SUBJECT_PREFIX}/report`,
+      `- ${SUBJECT_PREFIX}/thread`,
+      `- ${SUBJECT_PREFIX}/task latest`,
+      `- ${SUBJECT_PREFIX}/watch`,
+      `- ${SUBJECT_PREFIX}/labels`,
+      `- ${SUBJECT_PREFIX}/config`,
+      `- ${SUBJECT_PREFIX}/logs 10`,
+      `- ${SUBJECT_PREFIX}/reset`
+    ]
+  },
+  {
+    title: "Workspace routing:",
+    lines: [
+      `- ${SUBJECT_PREFIX}/workspace linker`,
+      `- ${SUBJECT_PREFIX}/linker fix the build`,
+      `- ${SUBJECT_PREFIX}/workspace clear`
+    ]
+  },
+  {
+    title: "Recommended workflow:",
+    lines: [
+      `1. Start with ${SUBJECT_PREFIX}/health or ${SUBJECT_PREFIX}/ps to confirm the daemon is healthy and the queue is clear.`,
+      `2. Pin the thread to a repo folder with ${SUBJECT_PREFIX}/workspace <folder> if you want work to happen in a specific project.`,
+      `3. Send the real work request in the same thread, for example: ${SUBJECT_PREFIX}/linker review the repo and fix the failing tests.`,
+      `4. While work is running, use ${SUBJECT_PREFIX}/thread, ${SUBJECT_PREFIX}/task latest, or ${SUBJECT_PREFIX}/report to inspect status without waking a new worker.`,
+      `5. If something looks wrong, use ${SUBJECT_PREFIX}/errors 10 and ${SUBJECT_PREFIX}/logs 10.`,
+      `6. If you want a clean conversation state for that thread, use ${SUBJECT_PREFIX}/reset and then send the next request.`
+    ]
+  },
+  {
+    title: "Inbox triage:",
+    lines: [
+      "- Normal inbox mail is categorized into mail/needs-reply, mail/waiting, mail/receipt, mail/newsletter, mail/alert, and mail/personal.",
+      "- Triage is label-only right now. It does not auto-archive mail."
+    ]
+  },
+  {
+    title: "Current safety posture:",
+    lines: [
+      "- Self-only mode is enabled, so the daemon only responds to mail that stays within your mailbox.",
+      "- The monitor remains read-only.",
+      "- The worker is the only role that edits files in the pinned workspace.",
+      "- Monitor commands do not call any LLM."
+    ]
+  },
+  {
+    title: "Good starter commands:",
+    lines: [
+      `- ${SUBJECT_PREFIX}/health`,
+      `- ${SUBJECT_PREFIX}/workspace linker`,
+      `- ${SUBJECT_PREFIX}/linker review the repo and give me a report`,
+      `- ${SUBJECT_PREFIX}/thread`,
+      `- ${SUBJECT_PREFIX}/report`
+    ]
+  }
+];
 const DIRECT_COMMANDS = new Set(EMAIL_CLI_COMMANDS.map((command) => command.name));
 const SPACE_DIRECT_COMMANDS = new Set(
   EMAIL_CLI_COMMANDS
@@ -185,6 +261,12 @@ const COMMAND_ALIASES = new Map(
     (command.aliases || []).map((alias) => [alias, command.name])
   )
 );
+const NATURAL_LANGUAGE_MONITOR_COMMANDS = [
+  {
+    pattern: /^is (?:the )?gmail[- ]agent up and running$/,
+    command: "ping"
+  }
+];
 
 function nowIso(now = () => new Date()) {
   return now().toISOString();
@@ -492,6 +574,16 @@ function isDirectCommandName(value) {
   return DIRECT_COMMANDS.has(normalizeCommandName(value));
 }
 
+function parseNaturalLanguageMonitorCommand(text) {
+  const normalized = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[?!.\s]+$/g, "")
+    .replace(/\s+/g, " ");
+  const matchedCommand = NATURAL_LANGUAGE_MONITOR_COMMANDS.find(({ pattern }) => pattern.test(normalized));
+  return matchedCommand ? matchedCommand.command : null;
+}
+
 function parseCommandText(text, options = {}) {
   const cleaned = options.skipReplyStrip ? String(text || "").trim() : stripReplyPrefixes(text);
   const prefixPattern = ALL_SUBJECT_PREFIXES.map((prefix) => escapeRegExp(prefix)).join("|");
@@ -583,6 +675,22 @@ function parseCommandText(text, options = {}) {
       matches: true,
       command: normalizedToken,
       commandArgs,
+      explicitCommand: true,
+      rawRemainder: trimmedRemainder,
+      rawCommandToken: rawToken.toLowerCase(),
+      viaSlash: false,
+      unknownCommand: false,
+      workspaceToken: null
+    };
+  }
+
+  const naturalLanguageCommand = parseNaturalLanguageMonitorCommand(trimmedRemainder);
+
+  if (naturalLanguageCommand) {
+    return {
+      matches: true,
+      command: naturalLanguageCommand,
+      commandArgs: "",
       explicitCommand: true,
       rawRemainder: trimmedRemainder,
       rawCommandToken: rawToken.toLowerCase(),
@@ -1035,28 +1143,25 @@ function formatWorkspaceLine(workspaceKey, workspacePath) {
 }
 
 function buildHelpBody() {
-  return buildMonitorReport([
-    "This mailbox acts as a self-only Codex email CLI.",
-    "",
-    "Worker requests:",
-    `  ${SUBJECT_PREFIX} <your request>`,
-    `  ${SUBJECT_PREFIX}/run <your request>`,
-    `  ${SUBJECT_PREFIX}/linker <your request>`,
-    "",
+  const lines = [
+    "Codex Email System Guide",
+    ""
+  ];
+
+  for (const section of HELP_GUIDE_SECTIONS) {
+    lines.push(section.title, ...section.lines, "");
+  }
+
+  lines.push(
     "Direct monitor commands:",
     ...buildCommandHelpLines(),
     "",
     "Body commands:",
     `  Put a command like \`${SUBJECT_PREFIX}/ps\` on the first non-empty line of the email body.`,
-    "  The monitor will run it without invoking the worker.",
-    "",
-    "Notes:",
-    "  - Only self-addressed threads are processed.",
-    "  - Only one worker task runs at a time.",
-    "  - Follow-ups in the same Gmail thread reuse the same worker session.",
-    `  - \`${SUBJECT_PREFIX}/<folder>\` pins the thread to a folder under your home directory and routes work there.`,
-    "  - Monitor commands do not call any LLM."
-  ]);
+    "  The monitor will run it without invoking the worker."
+  );
+
+  return buildMonitorReport(lines);
 }
 
 function buildQueueAckBody(system, task, threadState) {

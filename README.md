@@ -99,6 +99,14 @@ npm test
 
 The monitor treats the subject line, or the first non-empty body line, like a small mailbox CLI.
 
+`codex/help` is the compact operator guide for this surface. It summarizes:
+
+- what the system is: the monitor/worker split, single-flight queueing, Gmail-thread session reuse, and the monitor-guided `plan -> red -> green -> refactor -> docs` worker flow
+- best direct commands: `codex/help`, `codex/ps`, `codex/health`, `codex/queue`, `codex/tasks 10`, `codex/errors 10`, `codex/report`, `codex/thread`, `codex/task latest`, `codex/watch`, `codex/labels`, `codex/config`, `codex/logs 10`, and `codex/reset`
+- workspace routing: `codex/workspace linker`, `codex/linker <request>`, and `codex/workspace clear`
+- the recommended workflow: inspect daemon health, pin a workspace, send the request, inspect progress with thread/task/report, use errors/logs when something looks wrong, and `codex/reset` when you want a clean thread session
+- inbox triage and safety posture: label-only triage categories plus the self-only monitor posture and the worker-only write boundary
+
 Direct commands that stay on the monitor path:
 
 ```text
@@ -139,6 +147,7 @@ Useful operator notes:
 - `codex/linker <request>` is the fastest workspace shorthand and resolves to `~/linker`
 - `codex/workspace linker` is the clearer long-form syntax for a thread you plan to keep using
 - `codex/thread`, `codex/task latest`, `codex/ps`, `codex/config`, and `codex/logs 10` are the best inspection commands when debugging the daemon over email
+- natural-language liveness checks like `codex is the gmail-agent up and running?` are treated like `codex/ping` and stay on the monitor path
 - a body command works too, so you can reply in-thread with `codex/thread` as the first non-empty line
 
 ## 4. Domain Language
@@ -278,4 +287,4 @@ Use [AUTH.md](AUTH.md) for the exact browser pages, console links, and recovery 
 Upstream reference:
 
 - [googleworkspace/cli](https://github.com/googleworkspace/cli)
-- [timcash/linker README](https://github.com/timcash/linker)
+- Linker README in the sibling `linker` repo

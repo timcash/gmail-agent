@@ -273,6 +273,33 @@ test("status messages are answered by the monitor without creating new work", as
   assert.equal(system.state.threads["thread-1"].lastStatus, "done");
 });
 
+test("natural language liveness questions stay on the monitor path", async () => {
+  const transport = new FakeTransport();
+  const workerRunner = new FakeWorkerRunner();
+  const monitorRunner = new FakeMonitorRunner();
+  const system = new CodexEmailSystem({
+    mailboxEmail: TEST_MAILBOX,
+    monitorRunner,
+    persistState: async () => {},
+    transport,
+    workerRunner
+  });
+
+  await system.initialize();
+  await system.ingestMessage(makeMessage({
+    id: "msg-1",
+    thread_id: "thread-1",
+    subject: "codex is the gmail-agent up and running?",
+    body_text: ""
+  }));
+  await system.waitForIdle();
+
+  assert.equal(workerRunner.calls.length, 0);
+  assert.equal(Object.keys(system.state.tasks).length, 0);
+  assert.equal(transport.replies.length, 1);
+  assert.match(transport.replies[0].body, /status: awake/);
+});
+
 test("non-command inbox mail is triaged into a label without creating work or replies", async () => {
   const transport = new FakeTransport();
   const workerRunner = new FakeWorkerRunner();
@@ -368,6 +395,36 @@ test("slash commands are handled directly without invoking the worker", async ()
   assert.equal(transport.replies.length, 1);
   assert.deepEqual(transport.readThreadIds, ["thread-1", "thread-1"]);
   assert.match(transport.replies[0].body, /Direct monitor commands:/);
+});
+
+test("help command returns the system guide and recommended workflow", async () => {
+  const transport = new FakeTransport();
+  const workerRunner = new FakeWorkerRunner();
+  const monitorRunner = new FakeMonitorRunner();
+  const system = new CodexEmailSystem({
+    mailboxEmail: TEST_MAILBOX,
+    monitorRunner,
+    persistState: async () => {},
+    transport,
+    workerRunner
+  });
+
+  await system.initialize();
+  await system.ingestMessage(makeMessage({
+    id: "msg-guide",
+    thread_id: "thread-guide",
+    subject: "codex/help",
+    body_text: ""
+  }));
+
+  assert.equal(workerRunner.calls.length, 0);
+  assert.equal(Object.keys(system.state.tasks).length, 0);
+  assert.equal(transport.replies.length, 1);
+  assert.match(transport.replies[0].body, /What the system is:/);
+  assert.match(transport.replies[0].body, /Recommended workflow:/);
+  assert.match(transport.replies[0].body, /Good starter commands:/);
+  assert.match(transport.replies[0].body, /Triage is label-only right now\. It does not auto-archive mail\./);
+  assert.match(transport.replies[0].body, /codex\/task latest/);
 });
 
 test("task inspection commands report recent tasks without creating new work", async () => {

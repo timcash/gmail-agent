@@ -18,15 +18,22 @@ const {
   serializeError
 } = require("./codex-system");
 const {
+  archiveThread,
   ensureDaemonScopes,
   getMailboxProfile,
   listMessages,
+  listLabels,
+  markThreadUnread: markGmailThreadUnread,
   markThreadRead: markGmailThreadRead,
   modifyThreadLabels,
+  moveThreadToInbox,
   readMessage,
   readThread,
   replyToMessage,
+  searchMessages,
   sendEmail,
+  starThread,
+  unstarThread,
   runGwsJson
 } = require("./codex-gmail");
 const {
@@ -40,6 +47,11 @@ const {
   DEFAULT_PUBLIC_ORIGIN,
   startMailApiServer
 } = require("./codex-mail-api");
+const {
+  DEFAULT_HOSTNAME: DEFAULT_TUNNEL_HOSTNAME,
+  DEFAULT_TUNNEL_NAME,
+  startCodexTunnel
+} = require("./codex-cloudflare");
 
 const runtimeDir = (() => {
   const configured = process.env.CODEX_RUNTIME_DIR || process.env.CODEX_314_RUNTIME_DIR;
@@ -65,6 +77,8 @@ const defaultReconcileIntervalMs = 15000;
 const defaultPublicOrigin = process.env.CODEX_PUBLIC_ORIGIN
   || process.env.CODEX_MAIL_PUBLIC_ORIGIN
   || DEFAULT_PUBLIC_ORIGIN;
+const defaultTunnelHostname = process.env.CODEX_TUNNEL_HOSTNAME || DEFAULT_TUNNEL_HOSTNAME;
+const defaultTunnelName = process.env.CODEX_TUNNEL_NAME || DEFAULT_TUNNEL_NAME;
 const legacySubjectPrefixes = ["codex-314"];
 const workspaceRoot = (() => {
   const configured = process.env.CODEX_WORKSPACE_ROOT || process.env.CODEX_314_WORKSPACE_ROOT;
@@ -108,6 +122,9 @@ function parseArgs(args) {
     reconcileIntervalMs: defaultReconcileIntervalMs,
     httpPort: defaultMailApiPort,
     publicOrigin: defaultPublicOrigin,
+    startTunnel: process.env.CODEX_TUNNEL === "1",
+    tunnelHostname: defaultTunnelHostname,
+    tunnelName: defaultTunnelName,
     triageQuery: buildTriageReconcileQuery(),
     watchRenewHours: defaultWatchRenewHours
   };
@@ -159,6 +176,14 @@ function parseArgs(args) {
       index += 1;
     } else if (arg === "--public-origin" && args[index + 1]) {
       options.publicOrigin = args[index + 1];
+      index += 1;
+    } else if (arg === "--tunnel") {
+      options.startTunnel = true;
+    } else if (arg === "--tunnel-hostname" && args[index + 1]) {
+      options.tunnelHostname = args[index + 1];
+      index += 1;
+    } else if (arg === "--tunnel-name" && args[index + 1]) {
+      options.tunnelName = args[index + 1];
       index += 1;
     }
   }
@@ -1459,6 +1484,7 @@ async function main() {
   writePidFile();
   let shuttingDown = false;
   let apiServer = null;
+  let tunnelChild = null;
 
   const cleanup = () => {
     shuttingDown = true;
@@ -1470,6 +1496,11 @@ async function main() {
     if (apiServer) {
       void apiServer.close().catch(() => undefined);
       apiServer = null;
+    }
+
+    if (tunnelChild && !tunnelChild.killed) {
+      tunnelChild.kill();
+      tunnelChild = null;
     }
 
     removePidFile();
@@ -1523,7 +1554,15 @@ async function main() {
           getRuntimeInfo: () => system.getRuntimeInfo(),
           getState: () => system.state,
           host: process.env.CODEX_MAIL_HOST || "127.0.0.1",
+          listLabels: async () => listLabels(),
+          searchMessages: async (query, maxResults) => searchMessages(query, maxResults),
+          readMessage: async (messageId) => readMessage(messageId),
           markThreadRead: async (threadId) => markGmailThreadRead(threadId),
+          markThreadUnread: async (threadId) => markGmailThreadUnread(threadId),
+          archiveThread: async (threadId) => archiveThread(threadId),
+          moveThreadToInbox: async (threadId) => moveThreadToInbox(threadId),
+          starThread: async (threadId) => starThread(threadId),
+          unstarThread: async (threadId) => unstarThread(threadId),
           persist: async () => {
             await system.persist();
           },
@@ -1544,6 +1583,50 @@ async function main() {
         });
         await system.persist();
         log(`mail api listening on http://${apiServer.host}:${apiServer.port} -> ${apiServer.publicOrigin}`);
+
+        if (options.startTunnel) {
+          const localUrl = `http://${apiServer.host}:${apiServer.port}`;
+          try {
+            const tunnel = await startCodexTunnel({
+              workspaceRoot: projectRoot,
+              localUrl,
+              hostname: options.tunnelHostname,
+              tunnelName: options.tunnelName,
+              stdio: "inherit"
+            });
+            tunnelChild = tunnel.child;
+            system.recordEvent("mail_tunnel_started", {
+              hostname: tunnel.provisioned.hostname,
+              publicOrigin: tunnel.provisioned.publicOrigin,
+              tunnelId: tunnel.provisioned.tunnelId,
+              tunnelName: tunnel.provisioned.tunnelName,
+              dnsAction: tunnel.provisioned.dnsAction
+            });
+            await system.persist();
+            log(`mail tunnel listening at ${tunnel.provisioned.publicOrigin} -> ${localUrl}`);
+            tunnelChild.on("exit", (code) => {
+              if (shuttingDown) {
+                return;
+              }
+
+              system.recordEvent("mail_tunnel_stopped", {
+                code,
+                hostname: tunnel.provisioned.hostname,
+                publicOrigin: tunnel.provisioned.publicOrigin
+              });
+              void system.persist();
+              log(`mail tunnel stopped with code ${code === null ? "unknown" : code}.`);
+            });
+          } catch (error) {
+            system.recordEvent("mail_tunnel_failed", {
+              error: serializeError(error),
+              hostname: options.tunnelHostname,
+              publicOrigin: options.publicOrigin
+            });
+            await system.persist();
+            log(`mail tunnel failed to start: ${serializeError(error)}`);
+          }
+        }
       } catch (error) {
         system.recordEvent("mail_api_failed", {
           error: serializeError(error),

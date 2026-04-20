@@ -22,6 +22,7 @@
     "gmail:send": "node src/gmail-agent.js gmail:send",
     "codex:once": "node src/codex-daemon.js --once",
     "codex:daemon": "node src/codex-daemon.js",
+    "codex:daemon:tunnel": "node src/codex-daemon.js --tunnel",
     "codex:demo": "node src/codex-demo.js",
     "codex:e2e": "node src/codex-e2e.js",
     "codex:install-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\install-codex-startup.ps1",

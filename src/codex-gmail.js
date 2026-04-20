@@ -79,8 +79,8 @@ function ensureDaemonScopes(commandLabel = "codex daemon") {
   ensureRequiredScopes(gmailDaemonScopes, commandLabel);
 }
 
-function listMessages(query, maxResults = 10) {
-  const data = runGwsJson([
+function searchMessages(query, maxResults = 10) {
+  return runGwsJson([
     "gmail",
     "users",
     "messages",
@@ -94,6 +94,10 @@ function listMessages(query, maxResults = 10) {
     "--format",
     "json"
   ]);
+}
+
+function listMessages(query, maxResults = 10) {
+  const data = searchMessages(query, maxResults);
 
   return Array.isArray(data.messages) ? data.messages : [];
 }
@@ -130,6 +134,21 @@ function readThread(threadId) {
     "--format",
     "json"
   ]);
+}
+
+function listLabels() {
+  const data = runGwsJson([
+    "gmail",
+    "users",
+    "labels",
+    "list",
+    "--params",
+    JSON.stringify({ userId: "me" }),
+    "--format",
+    "json"
+  ]);
+
+  return Array.isArray(data.labels) ? data.labels : [];
 }
 
 function modifyThreadLabels(threadId, { addLabelIds = [], removeLabelIds = [] } = {}) {
@@ -170,6 +189,36 @@ function markThreadRead(threadId) {
   });
 }
 
+function markThreadUnread(threadId) {
+  return modifyThreadLabels(threadId, {
+    addLabelIds: ["UNREAD"]
+  });
+}
+
+function archiveThread(threadId) {
+  return modifyThreadLabels(threadId, {
+    removeLabelIds: ["INBOX"]
+  });
+}
+
+function moveThreadToInbox(threadId) {
+  return modifyThreadLabels(threadId, {
+    addLabelIds: ["INBOX"]
+  });
+}
+
+function starThread(threadId) {
+  return modifyThreadLabels(threadId, {
+    addLabelIds: ["STARRED"]
+  });
+}
+
+function unstarThread(threadId) {
+  return modifyThreadLabels(threadId, {
+    removeLabelIds: ["STARRED"]
+  });
+}
+
 function sendEmail({ to, subject, body, attachments = [] }) {
   const args = [
     "gmail",
@@ -206,14 +255,21 @@ function replyToMessage(messageId, body) {
 module.exports = {
   ensureDaemonScopes,
   ensureRequiredScopes,
+  listLabels,
   getMailboxProfile,
   listMessages,
+  searchMessages,
+  archiveThread,
   markThreadRead,
+  markThreadUnread,
+  moveThreadToInbox,
   modifyThreadLabels,
   readMessage,
   readMessages,
   readThread,
   replyToMessage,
   runGwsJson,
-  sendEmail
+  sendEmail,
+  starThread,
+  unstarThread
 };
