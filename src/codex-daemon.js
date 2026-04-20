@@ -1537,6 +1537,19 @@ async function main() {
     }
 
     const system = createSystem(profile, state, options);
+    const originalRecordEvent = system.recordEvent.bind(system);
+    system.recordEvent = (type, details) => {
+      const result = originalRecordEvent(type, details);
+
+      if (apiServer && typeof apiServer.notifyChange === "function") {
+        try {
+          apiServer.notifyChange(type, details);
+        } catch {
+        }
+      }
+
+      return result;
+    };
     await system.initialize();
     await system.resumePendingWork();
     system.state.watch.renewAfterHours = options.watchRenewHours;

@@ -7,10 +7,10 @@ const {
 
 function createState() {
   return {
-    activeTaskId: "task-0002",
+    activeTaskId: "task-0001",
     events: [],
     nextEventSequence: 1,
-    queue: ["task-0001"],
+    queue: ["task-0002"],
     tasks: {
       "task-0001": {
         id: "task-0001",
@@ -20,9 +20,37 @@ function createState() {
         status: "working",
         workflowStage: "green",
         workerSummary: "Focused on the logs route and browser smoke."
+      },
+      "task-0002": {
+        id: "task-0002",
+        threadId: "thread-queued",
+        requestText: "Add a codex mailbox performance note to the README.",
+        requestedAt: "2026-04-17T17:55:00.000Z",
+        status: "queued",
+        workflowStage: "plan",
+        workerSummary: null
+      },
+      "task-0003": {
+        id: "task-0003",
+        threadId: "thread-done",
+        requestText: "Ship the onboarding copy refresh and report back.",
+        requestedAt: "2026-04-17T17:10:00.000Z",
+        status: "done",
+        completedAt: "2026-04-17T17:25:00.000Z",
+        workflowStage: "complete",
+        workerSummary: "Onboarding copy shipped and verified."
       }
     },
     threads: {
+      "thread-human": {
+        threadId: "thread-human",
+        subject: "Quick question about next week",
+        updatedAt: "2026-04-17T19:00:00.000Z",
+        lastStatus: null,
+        lastTriageCategory: "needs-reply",
+        taskIds: [],
+        lastUserMessageId: "msg-human-1"
+      },
       "thread-working": {
         threadId: "thread-working",
         subject: "codex keep working on logs",
@@ -31,6 +59,24 @@ function createState() {
         taskIds: ["task-0001"],
         workspaceKey: "linker",
         lastUserMessageId: "msg-work-2"
+      },
+      "thread-queued": {
+        threadId: "thread-queued",
+        subject: "codex add README performance note",
+        updatedAt: "2026-04-17T17:58:00.000Z",
+        lastStatus: "queued",
+        taskIds: ["task-0002"],
+        workspaceKey: "linker",
+        lastUserMessageId: "msg-queued-1"
+      },
+      "thread-done": {
+        threadId: "thread-done",
+        subject: "codex ship onboarding copy refresh",
+        updatedAt: "2026-04-17T17:25:00.000Z",
+        lastStatus: "done",
+        taskIds: ["task-0003"],
+        workspaceKey: "linker",
+        lastUserMessageId: "msg-done-1"
       }
     }
   };
@@ -91,20 +137,35 @@ function createMailboxFixtures() {
       snippet: "Please keep going and finish the smoke test.",
       bodyText: "Please keep going and finish the smoke test."
     },
-    "msg-sent-1": {
-      id: "msg-sent-1",
-      threadId: "thread-sent",
-      internalDate: "1776464700000",
-      labelIds: ["SENT"],
+    "msg-queued-1": {
+      id: "msg-queued-1",
+      threadId: "thread-queued",
+      internalDate: "1776467880000",
+      labelIds: ["INBOX", "Label_codex"],
       payload: {
         headers: [
-          { name: "Subject", value: "Tuesday follow-up" },
+          { name: "Subject", value: "codex add README performance note" },
           { name: "From", value: "Repo Owner <owner@example.com>" },
-          { name: "To", value: "Jane <jane@example.com>" }
+          { name: "To", value: "Repo Owner <owner@example.com>" }
         ]
       },
-      snippet: "Tuesday afternoon works for me.",
-      bodyText: "Tuesday afternoon works for me."
+      snippet: "Add a short note about the faster codex-only thread list.",
+      bodyText: "Add a short note about the faster codex-only thread list."
+    },
+    "msg-done-1": {
+      id: "msg-done-1",
+      threadId: "thread-done",
+      internalDate: "1776465900000",
+      labelIds: ["INBOX", "Label_codex"],
+      payload: {
+        headers: [
+          { name: "Subject", value: "codex ship onboarding copy refresh" },
+          { name: "From", value: "Repo Owner <owner@example.com>" },
+          { name: "To", value: "Repo Owner <owner@example.com>" }
+        ]
+      },
+      snippet: "The onboarding copy refresh is shipped and verified.",
+      bodyText: "The onboarding copy refresh is shipped and verified."
     }
   };
 
@@ -146,52 +207,10 @@ async function withServer(run) {
     port: 0,
     publicOrigin: "https://codex.dialtone.earth",
     listLabels: async () => labelCatalog,
-    searchMessages: async (query, maxResults) => {
-      const normalizedQuery = String(query || "").toLowerCase();
-      const baseMatches = Object.values(messageCatalog).filter((message) => {
-        if (normalizedQuery.includes("in:sent")) {
-          return message.labelIds.includes("SENT");
-        }
-
-        if (normalizedQuery.includes("subject:codex")) {
-          return /codex/i.test(message.payload.headers[0].value);
-        }
-
-        if (normalizedQuery.includes("is:starred")) {
-          return message.labelIds.includes("STARRED");
-        }
-
-        if (normalizedQuery.includes("in:inbox is:unread")) {
-          return message.labelIds.includes("INBOX") && message.labelIds.includes("UNREAD");
-        }
-
-        if (normalizedQuery.includes("in:anywhere")) {
-          return true;
-        }
-
-        if (normalizedQuery.includes("in:inbox")) {
-          return message.labelIds.includes("INBOX");
-        }
-
-        return true;
-      }).filter((message) => {
-        if (!normalizedQuery.includes("tuesday")) {
-          return true;
-        }
-
-        const searchable = [
-          message.payload.headers[0].value,
-          message.snippet,
-          message.bodyText
-        ].join(" ").toLowerCase();
-        return searchable.includes("tuesday");
-      });
-
-      return {
-        messages: baseMatches.slice(0, Math.max(1, maxResults)),
-        resultSizeEstimate: baseMatches.length
-      };
-    },
+    searchMessages: async (query, maxResults) => ({
+      messages: Object.values(messageCatalog).slice(0, Math.max(1, maxResults)),
+      resultSizeEstimate: Object.keys(messageCatalog).length
+    }),
     readMessage: async (messageId) => {
       const message = messageCatalog[messageId];
 
@@ -244,17 +263,24 @@ async function withServer(run) {
         };
       }
 
+      if (threadId === "thread-queued") {
+        return {
+          id: threadId,
+          messages: [messageCatalog["msg-queued-1"]]
+        };
+      }
+
+      if (threadId === "thread-done") {
+        return {
+          id: threadId,
+          messages: [messageCatalog["msg-done-1"]]
+        };
+      }
+
       if (threadId === "thread-human") {
         return {
           id: threadId,
           messages: [messageCatalog["msg-human-1"]]
-        };
-      }
-
-      if (threadId === "thread-sent") {
-        return {
-          id: threadId,
-          messages: [messageCatalog["msg-sent-1"]]
         };
       }
 
@@ -285,6 +311,7 @@ async function withServer(run) {
       markReadCalls,
       markUnreadCalls,
       moveToInboxCalls,
+      notifyChange: server.notifyChange,
       readThreadCalls,
       replyCalls,
       starCalls,
@@ -295,7 +322,7 @@ async function withServer(run) {
   }
 }
 
-test("mail api exposes Gmail inbox views and search-backed thread lists", async () => {
+test("mail api exposes codex-only status views and cached thread lists", async () => {
   await withServer(async ({ baseUrl }) => {
     const viewsResponse = await fetch(`${baseUrl}/api/mail/views`, {
       headers: {
@@ -308,16 +335,16 @@ test("mail api exposes Gmail inbox views and search-backed thread lists", async 
     assert.deepEqual(
       viewsPayload.views.map((view) => [view.id, view.count]),
       [
-        ["inbox", 3],
-        ["unread", 1],
-        ["starred", 2],
-        ["sent", 1],
-        ["all-mail", 4],
-        ["codex", 2]
+        ["codex", 3],
+        ["queued", 1],
+        ["working", 1],
+        ["review", 0],
+        ["blocked", 0],
+        ["done", 1]
       ]
     );
 
-    const threadsResponse = await fetch(`${baseUrl}/api/mail/threads?view=inbox&q=Tuesday`, {
+    const threadsResponse = await fetch(`${baseUrl}/api/mail/threads?view=codex&q=logs`, {
       headers: {
         Origin: "http://127.0.0.1:4173"
       }
@@ -325,13 +352,24 @@ test("mail api exposes Gmail inbox views and search-backed thread lists", async 
     const threadsPayload = await threadsResponse.json();
 
     assert.equal(threadsResponse.status, 200);
-    assert.equal(threadsPayload.view, "inbox");
-    assert.equal(threadsPayload.searchQuery, "Tuesday");
+    assert.equal(threadsPayload.view, "codex");
+    assert.equal(threadsPayload.searchQuery, "logs");
     assert.equal(threadsPayload.threads.length, 1);
-    assert.equal(threadsPayload.threads[0].threadId, "thread-human");
-    assert.equal(threadsPayload.threads[0].subject, "Quick question about next week");
-    assert.equal(threadsPayload.threads[0].unread, true);
-    assert.deepEqual(threadsPayload.threads[0].labelNames, ["Inbox", "Unread", "Needs Reply"]);
+    assert.equal(threadsPayload.threads[0].threadId, "thread-working");
+    assert.equal(threadsPayload.threads[0].subject, "codex keep working on logs");
+    assert.equal(threadsPayload.threads[0].status, "working");
+    assert.deepEqual(threadsPayload.threads[0].labelNames, ["Working", "Green", "linker"]);
+
+    const queuedResponse = await fetch(`${baseUrl}/api/mail/threads?view=queued`, {
+      headers: {
+        Origin: "http://127.0.0.1:4173"
+      }
+    });
+    const queuedPayload = await queuedResponse.json();
+
+    assert.equal(queuedResponse.status, 200);
+    assert.equal(queuedPayload.threads.length, 1);
+    assert.equal(queuedPayload.threads[0].threadId, "thread-queued");
   });
 });
 
@@ -504,5 +542,43 @@ test("mail api allows GitHub Pages private-network preflight to loopback", async
       response.headers.get("access-control-allow-private-network"),
       "true"
     );
+  });
+});
+
+test("mail api streams codex daemon change events over sse", async () => {
+  await withServer(async ({ baseUrl, notifyChange }) => {
+    const response = await fetch(`${baseUrl}/api/mail/events`, {
+      headers: {
+        Accept: "text/event-stream",
+        Origin: "http://127.0.0.1:4173"
+      }
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "text/event-stream; charset=utf-8");
+
+    const reader = response.body.getReader();
+    let body = "";
+    notifyChange("task_progressed", {
+      taskId: "task-0001",
+      threadId: "thread-working"
+    });
+
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && !body.includes("\"type\":\"task_progressed\"")) {
+      const chunk = await reader.read();
+
+      if (chunk.done) {
+        break;
+      }
+
+      body += Buffer.from(chunk.value).toString("utf8");
+    }
+
+    await reader.cancel();
+
+    assert.match(body, /event: change/);
+    assert.match(body, /"type":"task_progressed"/);
+    assert.match(body, /"taskId":"task-0001"/);
   });
 });

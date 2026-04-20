@@ -1,6 +1,10 @@
 const http = require("http");
 
-const { serializeError } = require("./codex-system");
+const {
+  LEGACY_SUBJECT_PREFIXES,
+  SUBJECT_PREFIX,
+  serializeError
+} = require("./codex-system");
 
 const DEFAULT_PUBLIC_ORIGIN = process.env.CODEX_PUBLIC_ORIGIN
   || process.env.CODEX_MAIL_PUBLIC_ORIGIN
@@ -12,48 +16,46 @@ const DEFAULT_ALLOWED_ORIGIN_PATTERNS = [
   /^http:\/\/127\.0\.0\.1(?::\d+)?$/i,
   /^http:\/\/localhost(?::\d+)?$/i
 ];
+const CODex_SUBJECT_PREFIXES = [SUBJECT_PREFIX, ...LEGACY_SUBJECT_PREFIXES]
+  .map((value) => String(value || "").trim().toLowerCase())
+  .filter(Boolean)
+  .sort((left, right) => right.length - left.length);
 const MAIL_VIEW_SPECS = [
-  {
-    id: "inbox",
-    label: "Inbox",
-    description: "Recent inbox threads.",
-    kind: "mail",
-    query: "in:inbox"
-  },
-  {
-    id: "unread",
-    label: "Unread",
-    description: "Unread inbox threads.",
-    kind: "mail",
-    query: "in:inbox is:unread"
-  },
-  {
-    id: "starred",
-    label: "Starred",
-    description: "Starred threads.",
-    kind: "mail",
-    query: "is:starred"
-  },
-  {
-    id: "sent",
-    label: "Sent",
-    description: "Recently sent mail.",
-    kind: "mail",
-    query: "in:sent"
-  },
-  {
-    id: "all-mail",
-    label: "All Mail",
-    description: "Recent mail across the mailbox.",
-    kind: "mail",
-    query: "in:anywhere -in:trash"
-  },
   {
     id: "codex",
     label: "Codex",
-    description: "Codex-related conversations.",
-    kind: "status",
-    query: "subject:codex newer_than:30d"
+    description: "Recent codex threads.",
+    kind: "status"
+  },
+  {
+    id: "queued",
+    label: "Queued",
+    description: "Codex threads waiting for the worker.",
+    kind: "status"
+  },
+  {
+    id: "working",
+    label: "Working",
+    description: "Threads the worker is actively processing.",
+    kind: "status"
+  },
+  {
+    id: "review",
+    label: "Review",
+    description: "Threads waiting on monitor review.",
+    kind: "status"
+  },
+  {
+    id: "blocked",
+    label: "Blocked",
+    description: "Threads that need user attention.",
+    kind: "status"
+  },
+  {
+    id: "done",
+    label: "Done",
+    description: "Recently completed codex threads.",
+    kind: "status"
   }
 ];
 const MAIL_VIEW_IDS = new Set(MAIL_VIEW_SPECS.map((view) => view.id));
@@ -159,6 +161,20 @@ function sendHtml(response, statusCode, html, headers = {}) {
     ...headers
   });
   response.end(html);
+}
+
+function buildEventStreamHeaders(origin, allowedOrigins, requestHeaders = {}) {
+  return {
+    ...buildCorsHeaders(origin, allowedOrigins, requestHeaders),
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "X-Accel-Buffering": "no"
+  };
+}
+
+function writeEventStreamEvent(response, payload) {
+  response.write(`event: change\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
 function decodeBase64Url(value) {
@@ -423,6 +439,48 @@ function getThreadTasks(state, threadState) {
     .sort((left, right) => String(right.requestedAt || "").localeCompare(String(left.requestedAt || "")));
 }
 
+function matchesCodexSubject(subject) {
+  const normalized = String(subject || "").trim().toLowerCase();
+
+  if (!normalized) {
+    return false;
+  }
+
+  return CODex_SUBJECT_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`) || normalized.startsWith(`${prefix} `));
+}
+
+function isCodexThreadState(threadState) {
+  if (!threadState || typeof threadState !== "object") {
+    return false;
+  }
+
+  return matchesCodexSubject(threadState.subject)
+    || Boolean(threadState.lastStatus)
+    || Boolean(threadState.workerSessionId)
+    || Boolean(threadState.workspaceKey)
+    || Boolean(threadState.workspacePath)
+    || (Array.isArray(threadState.taskIds) && threadState.taskIds.length > 0)
+    || (Array.isArray(threadState.systemMessageIds) && threadState.systemMessageIds.length > 0);
+}
+
+function buildCodexLabelNames(threadState, latestTask) {
+  const labels = [];
+
+  if (threadState && threadState.lastStatus) {
+    labels.push(toTitleCase(threadState.lastStatus));
+  }
+
+  if (latestTask && latestTask.workflowStage) {
+    labels.push(toTitleCase(latestTask.workflowStage));
+  }
+
+  if (threadState && threadState.workspaceKey) {
+    labels.push(threadState.workspaceKey);
+  }
+
+  return Array.from(new Set(labels.filter(Boolean)));
+}
+
 function buildCodexBadges(threadState, latestTask) {
   const badges = [];
 
@@ -455,6 +513,107 @@ function buildCodexExcerpt(threadState, latestTask) {
   }
 
   return "";
+}
+
+function buildCodexThreadSummary(state, threadId, threadState) {
+  const tasks = getThreadTasks(state, threadState);
+  const latestTask = tasks[0] || null;
+  const status = threadState && threadState.lastStatus
+    ? threadState.lastStatus
+    : latestTask && latestTask.status
+      ? latestTask.status
+      : null;
+  const subject = String(
+    threadState && threadState.subject
+      ? threadState.subject
+      : latestTask && latestTask.requestText
+        ? clipText(latestTask.requestText, 80)
+        : "(no subject)"
+  ).trim() || "(no subject)";
+  const excerpt = clipText(
+    buildCodexExcerpt(threadState, latestTask)
+      || subject,
+    180
+  );
+  const labelNames = buildCodexLabelNames(threadState, latestTask);
+  const updatedAt = normalizeDate(
+    threadState && (threadState.updatedAt || threadState.createdAt)
+      ? threadState.updatedAt || threadState.createdAt
+      : latestTask && (latestTask.completedAt || latestTask.requestedAt)
+        ? latestTask.completedAt || latestTask.requestedAt
+        : null
+  );
+
+  return {
+    threadId,
+    latestMessageId: threadState && threadState.lastUserMessageId ? threadState.lastUserMessageId : null,
+    subject,
+    updatedAt,
+    workspaceKey: threadState && threadState.workspaceKey ? threadState.workspaceKey : null,
+    workspacePath: threadState && threadState.workspacePath ? threadState.workspacePath : null,
+    status,
+    triage: null,
+    taskCount: tasks.length,
+    latestTaskId: latestTask ? latestTask.id : null,
+    from: threadState && threadState.workspaceKey ? threadState.workspaceKey : "Codex",
+    to: [],
+    excerpt,
+    labelIds: labelNames.map((labelName) => `codex:${labelName.toLowerCase()}`),
+    labelNames,
+    unread: false,
+    starred: false,
+    inInbox: false,
+    inSent: false,
+    badges: buildCodexBadges(threadState, latestTask)
+  };
+}
+
+function getCodexThreadSummaries(state) {
+  return Object.entries(state && state.threads ? state.threads : {})
+    .filter(([, threadState]) => isCodexThreadState(threadState))
+    .map(([threadId, threadState]) => buildCodexThreadSummary(state, threadId, threadState))
+    .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
+}
+
+function matchesThreadSearch(summary, state, searchQuery) {
+  const normalizedQuery = String(searchQuery || "").trim().toLowerCase();
+
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  const threadState = state && state.threads && summary.threadId && state.threads[summary.threadId]
+    ? state.threads[summary.threadId]
+    : null;
+  const tasks = getThreadTasks(state, threadState);
+  const haystack = [
+    summary.subject,
+    summary.excerpt,
+    summary.from,
+    summary.workspaceKey,
+    summary.workspacePath,
+    summary.status,
+    summary.latestTaskId,
+    ...summary.labelNames,
+    ...summary.badges,
+    ...tasks.flatMap((task) => [
+      task.id,
+      task.status,
+      task.workflowStage,
+      task.requestText,
+      task.workerSummary
+    ])
+  ].join(" ").toLowerCase();
+
+  return haystack.includes(normalizedQuery);
+}
+
+function matchesView(summary, viewId) {
+  if (viewId === "codex") {
+    return true;
+  }
+
+  return summary.status === viewId;
 }
 
 function summarizeThreadFromMessage(state, labelLookup, message) {
@@ -525,6 +684,11 @@ function summarizeFallbackThread(state, labelLookup, threadId) {
         lastTriageCategory: null,
         taskIds: []
       };
+
+  if (isCodexThreadState(threadState)) {
+    return buildCodexThreadSummary(state, threadId, threadState);
+  }
+
   const tasks = getThreadTasks(state, threadState);
   const latestTask = tasks[0] || null;
 
@@ -692,69 +856,26 @@ async function getLabelLookup(options) {
   return createLabelLookup(labels);
 }
 
-function getViewSpec(viewId) {
-  return MAIL_VIEW_SPECS.find((view) => view.id === viewId) || MAIL_VIEW_SPECS[0];
-}
-
-function composeMailboxQuery(baseQuery, searchQuery = "") {
-  const parts = [String(baseQuery || "").trim(), String(searchQuery || "").trim()].filter(Boolean);
-  return parts.join(" ").trim();
-}
-
 async function buildMailViews(options) {
-  return await Promise.all(MAIL_VIEW_SPECS.map(async (view) => {
-    const result = await runSearch(options, view.query, 1);
+  const state = options.getState();
+  const summaries = getCodexThreadSummaries(state);
 
-    return {
-      id: view.id,
-      label: view.label,
-      description: view.description,
-      kind: view.kind,
-      count: result.resultSizeEstimate
-    };
+  return MAIL_VIEW_SPECS.map((view) => ({
+    id: view.id,
+    label: view.label,
+    description: view.description,
+    kind: view.kind,
+    count: summaries.filter((summary) => matchesView(summary, view.id)).length
   }));
 }
 
 async function listThreadsForView(options, viewId, limit = 20, searchQuery = "") {
   const state = options.getState();
-  const labelLookup = await getLabelLookup(options);
-  const view = getViewSpec(viewId);
-  const result = await runSearch(
-    options,
-    composeMailboxQuery(view.query, searchQuery),
-    Math.max(1, limit * 3)
-  );
-  const seenThreadIds = new Set();
-  const candidates = [];
+  const summaries = getCodexThreadSummaries(state)
+    .filter((summary) => matchesView(summary, viewId))
+    .filter((summary) => matchesThreadSearch(summary, state, searchQuery));
 
-  for (const message of result.messages) {
-    const threadId = message && message.threadId ? String(message.threadId) : "";
-
-    if (!threadId || seenThreadIds.has(threadId)) {
-      continue;
-    }
-
-    seenThreadIds.add(threadId);
-    candidates.push(message);
-
-    if (candidates.length >= limit) {
-      break;
-    }
-  }
-
-  const messages = await Promise.all(candidates.map(async (message) => {
-    if (typeof options.readMessage === "function" && message && message.id) {
-      const hydrated = await options.readMessage(message.id);
-      return {
-        ...message,
-        ...(hydrated && typeof hydrated === "object" ? hydrated : {})
-      };
-    }
-
-    return message;
-  }));
-
-  return messages.map((message) => summarizeThreadFromMessage(state, labelLookup, message));
+  return summaries.slice(0, Math.max(1, limit));
 }
 
 async function buildHealthSnapshot(context) {
@@ -767,7 +888,7 @@ async function buildHealthSnapshot(context) {
     mailbox: context.getMailboxProfile ? context.getMailboxProfile() : null,
     runtime: runtime && typeof runtime === "object" ? runtime : {},
     counts: {
-      threads: Number(views.find((view) => view.id === "all-mail")?.count || 0),
+      threads: Number(views.find((view) => view.id === "codex")?.count || 0),
       tasks: Object.keys(state.tasks || {}).length,
       queueDepth: Array.isArray(state.queue) ? state.queue.length : 0,
       activeTaskId: state.activeTaskId || null,
@@ -814,7 +935,7 @@ async function applyThreadAction(threadId, action, options) {
   }
 }
 
-function buildMailApiHandler(options) {
+function buildMailApiHandler(options, eventClients = new Set()) {
   const allowedOrigins = Array.isArray(options.allowedOrigins) && options.allowedOrigins.length
     ? options.allowedOrigins
     : DEFAULT_ALLOWED_ORIGIN_PATTERNS;
@@ -846,6 +967,29 @@ function buildMailApiHandler(options) {
         return;
       }
 
+      if (request.method === "GET" && requestUrl.pathname === "/api/mail/events") {
+        const streamHeaders = buildEventStreamHeaders(origin, allowedOrigins, request.headers);
+        response.writeHead(200, streamHeaders);
+        response.write("retry: 2000\n\n");
+        response.write(": connected\n\n");
+
+        const client = {
+          response,
+          keepAlive: setInterval(() => {
+            response.write(": keepalive\n\n");
+          }, 20_000)
+        };
+        const cleanup = () => {
+          clearInterval(client.keepAlive);
+          eventClients.delete(client);
+        };
+
+        eventClients.add(client);
+        request.on("close", cleanup);
+        request.on("aborted", cleanup);
+        return;
+      }
+
       if (request.method === "GET" && requestUrl.pathname === "/api/mail/health") {
         sendJson(response, 200, await buildHealthSnapshot(options), corsHeaders);
         return;
@@ -860,8 +1004,8 @@ function buildMailApiHandler(options) {
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/api/mail/threads") {
-        const requestedView = String(requestUrl.searchParams.get("view") || "inbox").trim().toLowerCase();
-        const viewId = MAIL_VIEW_IDS.has(requestedView) ? requestedView : "inbox";
+        const requestedView = String(requestUrl.searchParams.get("view") || "codex").trim().toLowerCase();
+        const viewId = MAIL_VIEW_IDS.has(requestedView) ? requestedView : "codex";
         const limit = Number.parseInt(requestUrl.searchParams.get("limit") || "20", 10);
         const searchQuery = String(requestUrl.searchParams.get("q") || "").trim();
 
@@ -1064,7 +1208,25 @@ function buildMailApiHandler(options) {
 function startMailApiServer(options) {
   const host = options.host || DEFAULT_HOST;
   const port = Number.isFinite(Number(options.port)) ? Number(options.port) : DEFAULT_PORT;
-  const handler = buildMailApiHandler(options);
+  const eventClients = new Set();
+  const handler = buildMailApiHandler(options, eventClients);
+
+  const notifyChange = (type, details = {}) => {
+    const payload = {
+      at: new Date().toISOString(),
+      details,
+      type: String(type || "change")
+    };
+
+    for (const client of Array.from(eventClients)) {
+      try {
+        writeEventStreamEvent(client.response, payload);
+      } catch {
+        clearInterval(client.keepAlive);
+        eventClients.delete(client);
+      }
+    }
+  };
 
   return new Promise((resolve, reject) => {
     const server = http.createServer((request, response) => {
@@ -1079,9 +1241,19 @@ function startMailApiServer(options) {
       resolve({
         host,
         port: resolvedPort,
+        notifyChange,
         publicOrigin: options.publicOrigin || DEFAULT_PUBLIC_ORIGIN,
         server,
         close: () => new Promise((closeResolve, closeReject) => {
+          for (const client of Array.from(eventClients)) {
+            clearInterval(client.keepAlive);
+            try {
+              client.response.end();
+            } catch {
+            }
+            eventClients.delete(client);
+          }
+
           server.close((error) => {
             if (error) {
               closeReject(error);
